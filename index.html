@@ -3152,7 +3152,7 @@
                             ? `<div class="image-description">${image.description}</div>`
                             : ""
                         }
-                        <div class="image-size">${image.size || ""}</div>
+                        <div class="image-size">${getCardSizeLabel(image)}</div>
                     </div>
                 `;
 
@@ -4544,7 +4544,7 @@
                             ? `<div class="image-description">${image.description}</div>`
                             : ""
                         }
-                        <div class="image-size">${image.size || ""}</div>
+                        <div class="image-size">${getCardSizeLabel(image)}</div>
                     </div>
                 `;
 
@@ -4983,7 +4983,8 @@
             thumbSrc: item.thumbSrc || "",
             url: item.url || item.full_url || item.fullUrl || src,
             filename: item.filename || item.new_name || item.original_name || "",
-            size: item.size || item.output_size || item.output_size_kb || "",
+            size: item.size || item.output_size || item.output_size_kb || item.sizeKB || "",
+            thumbSize: item.thumbSize || item.thumbnail_size || item.thumbnailSize || item.thumbnail_size_kb || item.thumbSizeKB || "",
             mode: item.mode || item.publish_mode || "",
             section: item.section || "",
             year: item.year || "",
@@ -5019,6 +5020,7 @@
             thumbSrc: image.thumbSrc || "",
             url: image.url || image.src,
             size: image.size || formatFileSize(image.file?.size || 0),
+            thumbSize: image.thumbSize || "",
             width: image.width || "",
             height: image.height || "",
             sha256: image.sha256 || "",
@@ -5032,6 +5034,27 @@
           if (image.collection) parts.push(image.collection);
           if (image.section) parts.push(image.section);
           return parts.slice(0, 3).join(" • ");
+        }
+
+
+        function isUsingThumbnailInCard(image) {
+          const cardSrc = getDisplayImageSrc(image, "card");
+          return Boolean(
+            cardSrc &&
+            image.src &&
+            cardSrc !== image.src &&
+            (image.thumbSrc || image.thumbUrl || image.thumbnail_url || image.thumbnailUrl)
+          );
+        }
+
+        function getCardSizeLabel(image) {
+          if (isUsingThumbnailInCard(image) && image.thumbSize) {
+            return `Thumb: ${image.thumbSize}`;
+          }
+          if (image.size) {
+            return isUsingThumbnailInCard(image) ? `Full: ${image.size}` : image.size;
+          }
+          return "";
         }
 
         // Final renderer override: uses thumbnails in the grid, but keeps full src for preview/quiz/projector.
@@ -5076,7 +5099,7 @@
                             : ""
                         }
                         ${metadata ? `<div class="image-size">${metadata}</div>` : ""}
-                        <div class="image-size">${image.size || ""}</div>
+                        <div class="image-size">${getCardSizeLabel(image)}</div>
                     </div>
                 `;
 
