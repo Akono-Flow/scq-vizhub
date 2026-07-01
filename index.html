@@ -3304,6 +3304,66 @@
 
           return `${year}${month}${day}_${hours}${minutes}${seconds}`;
         }
+
+
+        // Convert image sources to PowerPoint-safe data URLs.
+        // Browser <img> tags can display remote HTTPS URLs directly, but PptxGenJS
+        // needs image bytes/data when generating a downloadable PPTX in the browser.
+        function isDataUrl(value) {
+          return typeof value === "string" && value.trim().startsWith("data:");
+        }
+
+        function isHttpUrl(value) {
+          return /^https?:\/\//i.test(String(value || "").trim());
+        }
+
+        function blobToDataUrl(blob) {
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error || new Error("Failed to read image blob"));
+            reader.readAsDataURL(blob);
+          });
+        }
+
+        async function imageSourceToDataUrl(src) {
+          if (!src) {
+            throw new Error("Image source is missing");
+          }
+          if (isDataUrl(src)) {
+            return src;
+          }
+          if (isHttpUrl(src)) {
+            const response = await fetch(src, { mode: "cors", cache: "force-cache" });
+            if (!response.ok) {
+              throw new Error(`Image request failed (${response.status}) for ${src}`);
+            }
+            const blob = await response.blob();
+            return await blobToDataUrl(blob);
+          }
+          return src;
+        }
+
+        function getImageDimensions(imgSrc) {
+          return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = function () {
+              resolve({
+                width: this.naturalWidth || this.width,
+                height: this.naturalHeight || this.height,
+                aspectRatio: (this.naturalWidth || this.width) / (this.naturalHeight || this.height),
+              });
+            };
+            img.onerror = () => reject(new Error(`Could not load image for PPT: ${imgSrc}`));
+            img.src = imgSrc;
+          });
+        }
+
+        async function prepareImageForPowerPoint(image) {
+          const dataUrl = await imageSourceToDataUrl(image.src);
+          const dimensions = await getImageDimensions(dataUrl);
+          return { image, dataUrl, dimensions };
+        }
         // -------------------------------------------------------------------------------------------------------------
         // Generate PowerPoint
         // function handleGenerate() {
@@ -3529,21 +3589,6 @@
 
           // Start generating PowerPoint
           setTimeout(() => {
-            // Helper function to calculate image dimensions while preserving aspect ratio
-            function getImageDimensions(imgSrc) {
-              return new Promise((resolve) => {
-                const img = new Image();
-                img.onload = function () {
-                  resolve({
-                    width: this.width,
-                    height: this.height,
-                    aspectRatio: this.width / this.height,
-                  });
-                };
-                img.src = imgSrc;
-              });
-            }
-
             // Create new PowerPoint presentation
             const pptx = new window.PptxGenJS();
 
@@ -3610,13 +3655,11 @@
               });
             }
 
-            // Using Promise.all to process all images
-            Promise.all(
-              imagesToUse.map((image) => getImageDimensions(image.src))
-            )
-              .then((imageDimensions) => {
-                // Now we have dimensions for all images
-                imagesToUse.forEach((image, index) => {
+            // Convert images to PowerPoint-safe data URLs, then calculate dimensions.
+            Promise.all(imagesToUse.map((image) => prepareImageForPowerPoint(image)))
+              .then((pptImages) => {
+                pptImages.forEach((pptImage, index) => {
+                  const image = pptImage.image;
                   const slide = pptx.addSlide();
 
                   // Set background based on theme
@@ -3642,11 +3685,11 @@
                   };
 
                   // Get the original dimensions for this image
-                  const imgDimensions = imageDimensions[index];
+                  const imgDimensions = pptImage.dimensions;
 
                   // Prepare image options with proper sizing and positioning
                   let imageOptions = {
-                    data: image.src,
+                    data: pptImage.dataUrl,
                   };
 
                   if (settings.imageSize === "fill") {
@@ -3822,7 +3865,7 @@
                 console.error("Error getting image dimensions:", error);
                 showModal(
                   "Generation Error",
-                  "Failed to process image dimensions. Please try again.",
+                  "Failed to prepare one or more images for PowerPoint. If you are using online JSON, make sure the media URLs are accessible and allow browser fetching.",
                   false
                 );
                 if (progressInterval) {
@@ -4355,7 +4398,7 @@
           reader.readAsText(file);
         }
 
-        function generatePPT() {
+        async function generatePPT() {
           if (images.length === 0) {
             showModal(
               "No Images",
@@ -4401,15 +4444,22 @@
             ? images.length + 1
             : images.length;
 
-          images.forEach((image, index) => {
+          for (const [index, image] of images.entries()) {
             currentSlide = settings.titleSlide ? index + 1 : index;
             updateProgress(currentSlide, totalSlides);
 
             const slide = pptx.addSlide();
 
-            // Add image
+            // Add image. Convert remote URLs to data URLs for PptxGenJS.
+            let pptImageData;
+            try {
+              pptImageData = await imageSourceToDataUrl(image.src);
+            } catch (error) {
+              console.error("Could not prepare image for PPT:", image, error);
+              continue;
+            }
             slide.addImage({
-              data: image.src,
+              data: pptImageData,
               x: "10%",
               y: "10%",
               w: "80%",
@@ -4440,7 +4490,7 @@
                 align: "center",
               });
             }
-          });
+          }
 
           // Generate the file name
           const fileName = "presentation.pptx";
