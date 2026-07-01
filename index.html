@@ -478,6 +478,13 @@
         font-weight: 500;
       }
 
+      .settings-hint {
+        font-size: 0.8rem;
+        color: var(--text-secondary, #888);
+        margin: 0.5rem 0 0;
+        line-height: 1.4;
+      }
+
       .settings-item {
         margin-bottom: 1.2rem;
       }
@@ -1915,6 +1922,10 @@
             <i class="fas fa-file-import"></i>
             <span>Import JSON</span>
           </div>
+          <div class="upload-action" id="loadFromRepoButton">
+            <i class="fas fa-cloud-download-alt"></i>
+            <span>Reload from Media Repo</span>
+          </div>
         </div>
       </div>
 
@@ -1963,6 +1974,24 @@
       <div class="settings-header">
         <h3 class="settings-title">Presentation Settings</h3>
         <i class="fas fa-times close-settings" id="closeSettings"></i>
+      </div>
+
+      <div class="settings-group">
+        <h4 class="settings-group-title">Media Catalog</h4>
+        <div class="settings-item">
+          <label for="catalogUrl">Catalog URL</label>
+          <input
+            type="text"
+            id="catalogUrl"
+            placeholder="https://media.learnwithcole.com/catalog/vizhub-online.json"
+          />
+        </div>
+        <p class="settings-hint">
+          VizHub loads this automatically when the page opens. Click
+          "Reload from Media Repo" on the main screen after publishing
+          new media, or edit this URL and reload if you're pointing at a
+          different media repo.
+        </p>
       </div>
 
       <div class="settings-group">
@@ -2418,6 +2447,8 @@
         const exportJsonButton = document.getElementById("exportJsonButton");
         const dashboardImportJsonButton = document.getElementById("dashboardImportJsonButton");
         const previewImportJsonButton = document.getElementById("previewImportJsonButton");
+        const loadFromRepoButton = document.getElementById("loadFromRepoButton");
+        const catalogUrlInput = document.getElementById("catalogUrl");
         const previewBlackscreenButton = document.getElementById("previewBlackscreenButton");
         const previewWhitescreenButton = document.getElementById("previewWhitescreenButton");
 
@@ -2456,6 +2487,14 @@
           imageShadow: true,
         };
 
+        // Media Catalog (GitHub Media Studio integration)
+        // Points at the "catalog/vizhub-online.json" file that GitHub Media Studio's
+        // Export to Repo step publishes into the media repo. Editable in Settings so
+        // this still works if the media repo/domain ever changes.
+        const DEFAULT_CATALOG_URL =
+          "https://media.learnwithcole.com/catalog/vizhub-online.json";
+        const CATALOG_URL_STORAGE_KEY = "vizhubCatalogUrl";
+
         // Initialize
         init();
 
@@ -2471,6 +2510,11 @@
             updateEmptyState();
             updateKnowledgeFilterCounts();
             initializeSettings(); // Add this line
+            initializeCatalogUrlField();
+            // Auto-load the published media library on startup. Silent: no modal
+            // popups on success or failure, so a fresh page load stays quiet - the
+            // dropzone/manual import remain available as a fallback either way.
+            loadFromMediaCatalog({ silent: true });
           } else {
             alert(
               "Your browser does not support the File APIs needed for this app."
@@ -2499,6 +2543,11 @@
           // File input events
           uploadIcon.addEventListener("click", () => fileInput.click());
           fileInput.addEventListener("change", handleFileSelect);
+          if (loadFromRepoButton) {
+            loadFromRepoButton.addEventListener("click", () =>
+              loadFromMediaCatalog({ silent: false })
+            );
+          }
 
           // Drag and drop events
           dropZone.addEventListener("dragover", handleDragOver);
@@ -5169,6 +5218,118 @@
           return card;
         }
 
+        // Apply a parsed JSON payload (from a file import OR a fetched catalog) to the
+        // app's image list. Shared by handleJsonImport() and loadFromMediaCatalog() so
+        // both paths behave identically and stay in sync.
+        function applyImportedRecords(payload) {
+          const records = getRecordsFromJsonPayload(payload);
+          if (!records.length) {
+            throw new Error("No image records found in this catalog.");
+          }
+
+          const importedImages = records
+            .map(normalizeImportedImage)
+            .filter((image) => image.src);
+
+          if (!importedImages.length) {
+            throw new Error("Records were found, but none had a usable src/url field.");
+          }
+
+          images = importedImages;
+          imagesContainer.innerHTML = "";
+          filterImages();
+          renderFilteredImages();
+          updateEmptyState();
+          updateGenerateButton();
+          updateKnowledgeFilterCounts();
+
+          if (previewPanel.classList.contains("active")) {
+            currentPreviewIndex = 0;
+            showCurrentPreview();
+          }
+
+          if (quizPanel.classList.contains("active")) {
+            quizImages = [...images];
+            currentQuizIndex = 0;
+            showCurrentQuizSlide();
+          }
+
+          return importedImages.length;
+        }
+
+        function getCatalogUrl() {
+          const stored = localStorage.getItem(CATALOG_URL_STORAGE_KEY);
+          return (stored && stored.trim()) || DEFAULT_CATALOG_URL;
+        }
+
+        function setCatalogUrl(url) {
+          const trimmed = (url || "").trim();
+          if (trimmed) {
+            localStorage.setItem(CATALOG_URL_STORAGE_KEY, trimmed);
+          } else {
+            localStorage.removeItem(CATALOG_URL_STORAGE_KEY);
+          }
+        }
+
+        function initializeCatalogUrlField() {
+          if (!catalogUrlInput) return;
+          catalogUrlInput.value = getCatalogUrl();
+          catalogUrlInput.addEventListener("change", () => {
+            setCatalogUrl(catalogUrlInput.value);
+            catalogUrlInput.value = getCatalogUrl();
+          });
+        }
+
+        // Fetch catalog/vizhub-online.json (or whatever URL is configured in Settings)
+        // from the media repo and load it, the same way a manual JSON import would.
+        // silent = true (used on page load): no modal popups either way, just a
+        // console note on failure - the dropzone/manual import stay available.
+        // silent = false (used by the "Reload from Media Repo" button): shows a
+        // loading modal, then a success or error modal.
+        async function loadFromMediaCatalog(options = {}) {
+          const { silent = false } = options;
+          const url = getCatalogUrl();
+          if (!url) return 0;
+
+          if (!silent) {
+            showModal(
+              "Loading Media Library",
+              `Fetching the latest catalog from ${url} ...`,
+              true
+            );
+          }
+
+          try {
+            const response = await fetch(url, { cache: "no-store" });
+            if (!response.ok) {
+              throw new Error(`Request failed (HTTP ${response.status})`);
+            }
+            const payload = await response.json();
+            const count = applyImportedRecords(payload);
+
+            if (!silent) {
+              showModal(
+                "Media Library Loaded",
+                `${count} image record(s) loaded from the media repo.`,
+                false
+              );
+            }
+            return count;
+          } catch (error) {
+            console.warn("Could not auto-load media catalog:", error);
+            if (!silent) {
+              showModal(
+                "Could Not Load Media Repo",
+                `Could not load the catalog from ${url} (${error.message}). ` +
+                  `You can still import a JSON file manually, check the URL in ` +
+                  `Settings, or click "Reload from Media Repo" to try again.`,
+                false
+              );
+            }
+            return 0;
+          }
+        }
+
         // Final import override: preserves all metadata and supports array or catalog object payloads.
         function handleJsonImport(event) {
           const file = event.target.files[0];
@@ -5178,41 +5339,10 @@
           reader.onload = function (e) {
             try {
               const payload = JSON.parse(e.target.result);
-              const records = getRecordsFromJsonPayload(payload);
-              if (!records.length) {
-                throw new Error("No image records found in this JSON file.");
-              }
-
-              const importedImages = records
-                .map(normalizeImportedImage)
-                .filter((image) => image.src);
-
-              if (!importedImages.length) {
-                throw new Error("Records were found, but none had a usable src/url field.");
-              }
-
-              images = importedImages;
-              imagesContainer.innerHTML = "";
-              filterImages();
-              renderFilteredImages();
-              updateEmptyState();
-              updateGenerateButton();
-              updateKnowledgeFilterCounts();
-
-              if (previewPanel.classList.contains("active")) {
-                currentPreviewIndex = 0;
-                showCurrentPreview();
-              }
-
-              if (quizPanel.classList.contains("active")) {
-                quizImages = [...images];
-                currentQuizIndex = 0;
-                showCurrentQuizSlide();
-              }
-
+              const count = applyImportedRecords(payload);
               showModal(
                 "Import Complete",
-                `${importedImages.length} image record(s) imported successfully.`,
+                `${count} image record(s) imported successfully.`,
                 false
               );
             } catch (error) {
